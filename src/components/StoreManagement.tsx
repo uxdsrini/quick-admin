@@ -1,27 +1,22 @@
-import React, { useState, useEffect } from 'react';
-import { collection, addDoc, updateDoc, deleteDoc, doc, getDocs, query, orderBy, QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
+import { useState, useEffect, useRef } from 'react';
+import { collection, query, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { Store } from '../types';
-import { Plus, Edit2, Trash2, Store as StoreIcon } from 'lucide-react';
+import { Plus, Edit2, Trash2, Store as StoreIcon, Search, X } from 'lucide-react';
 import { VENDOR_CATEGORIES } from '../constants/categories';
+import { Store } from '../types';
 
 type VendorCategory = typeof VENDOR_CATEGORIES[number];
 
-// Removed the direct definition of vendor categories
-
-interface StoreModalProps {
-  store: Store | null;
-  onSave: (storeData: Omit<Store, 'id'>) => Promise<void>;
-  onClose: () => void;
-}
-
 export default function StoreManagement() {
   const [stores, setStores] = useState<Store[]>([]);
+  const [filteredStores, setFilteredStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingStore, setEditingStore] = useState<Store | null>(null);
-  // eslint-disable-next-line no-empty-pattern
-  const [] = useState<VendorCategory>(VENDOR_CATEGORIES[0]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [suggestions, setSuggestions] = useState<Store[]>([]);
+  const searchRef = useRef<HTMLDivElement>(null);
 
   const loadStores = async () => {
     try {
@@ -32,9 +27,10 @@ export default function StoreManagement() {
         ...doc.data()
       })) as Store[];
       setStores(storesData);
+      setFilteredStores(storesData);
+      setLoading(false);
     } catch (error) {
       console.error('Error loading stores:', error);
-    } finally {
       setLoading(false);
     }
   };
@@ -43,116 +39,276 @@ export default function StoreManagement() {
     loadStores();
   }, []);
 
-  const handleAddStore = async (storeData: Omit<Store, 'id'>) => {
-    try {
-      await addDoc(collection(db, 'stores'), storeData);
-      await loadStores();
-      setIsModalOpen(false);
-    } catch (error) {
-      console.error('Error adding store:', error);
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    if (searchQuery.trim() === '') {
+      setFilteredStores(stores);
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
     }
+
+    const query = searchQuery.toLowerCase();
+    const filtered = stores.filter(store =>
+      store.name.toLowerCase().includes(query) ||
+      store.category.toLowerCase().includes(query) ||
+      store.address.toLowerCase().includes(query) ||
+      store.phone.includes(query)
+    );
+
+    setFilteredStores(filtered);
+    setSuggestions(filtered.slice(0, 5)); // Show top 5 suggestions
+  }, [searchQuery, stores]);
+
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchQuery(e.target.value);
+    setShowSuggestions(true);
   };
 
-  const handleUpdateStore = async (storeData: Omit<Store, 'id'>) => {
-    if (!editingStore) return;
+  const handleSuggestionClick = (store: Store) => {
+    setSearchQuery(store.name);
+    setShowSuggestions(false);
+  };
+
+  const clearSearch = () => {
+    setSearchQuery('');
+    setFilteredStores(stores);
+    setShowSuggestions(false);
+  };
+
+  const handleSaveStore = async (storeData: Omit<Store, 'id'>) => {
     try {
-      await updateDoc(doc(db, 'stores', editingStore.id), storeData);
-      await loadStores();
+      if (editingStore) {
+        await updateDoc(doc(db, 'stores', editingStore.id), storeData);
+      } else {
+        await addDoc(collection(db, 'stores'), {
+          ...storeData,
+          createdAt: new Date().toISOString()
+        });
+      }
+      loadStores();
       setIsModalOpen(false);
       setEditingStore(null);
     } catch (error) {
-      console.error('Error updating store:', error);
+      console.error('Error saving store:', error);
     }
   };
 
-  const handleDeleteStore = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this store?')) return;
-    try {
-      await deleteDoc(doc(db, 'stores', id));
-      await loadStores();
-    } catch (error) {
-      console.error('Error deleting store:', error);
+  const handleDeleteStore = async (storeId: string) => {
+    if (window.confirm('Are you sure you want to delete this store?')) {
+      try {
+        await deleteDoc(doc(db, 'stores', storeId));
+        loadStores();
+      } catch (error) {
+        console.error('Error deleting store:', error);
+      }
     }
   };
-
-  const openEditModal = (store: Store) => {
-    setEditingStore(store);
-    setIsModalOpen(true);
-  };
-
-  const closeModal = () => {
-    setIsModalOpen(false);
-    setEditingStore(null);
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-600"></div>
-      </div>
-    );
-  }
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold text-gray-900">Store Management</h2>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+        <div>
+          <h2 className="text-2xl font-bold">Store Management</h2>
+          <p className="text-sm text-gray-600 mt-1">
+            Total Stores: {filteredStores.length} {stores.length !== filteredStores.length && `of ${stores.length}`}
+          </p>
+        </div>
         <button
-          onClick={() => setIsModalOpen(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition"
+          onClick={() => {
+            setEditingStore(null);
+            setIsModalOpen(true);
+          }}
+          className="bg-teal-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-teal-700 whitespace-nowrap"
         >
-          <Plus className="w-5 h-5" />
+          <Plus size={20} />
           Add Store
         </button>
       </div>
 
-      {stores.length === 0 ? (
+      {/* Search Bar */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6 shadow-sm">
+        <div ref={searchRef} className="relative">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={handleSearchChange}
+            onFocus={() => searchQuery && setShowSuggestions(true)}
+            placeholder="Search by store name, category, address, or phone..."
+            className="w-full pl-10 pr-10 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+          />
+          {searchQuery && (
+            <button
+              onClick={clearSearch}
+              className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
+
+          {/* Search Suggestions */}
+          {showSuggestions && suggestions.length > 0 && (
+            <div className="absolute z-20 w-full mt-2 bg-white border border-gray-200 rounded-lg shadow-xl max-h-80 overflow-y-auto">
+              {suggestions.map((store) => (
+                <button
+                  key={store.id}
+                  onClick={() => handleSuggestionClick(store)}
+                  className="w-full px-4 py-3 text-left hover:bg-gray-50 flex items-center gap-3 border-b border-gray-100 last:border-b-0 transition"
+                >
+                  <div className="flex-shrink-0 w-12 h-12 bg-gray-100 rounded overflow-hidden">
+                    {store.image ? (
+                      <img src={store.image} alt={store.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-teal-100 to-teal-200">
+                        <StoreIcon className="w-6 h-6 text-teal-400" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-sm font-semibold text-gray-900 truncate">{store.name}</p>
+                      <span className={`ml-2 px-2 py-0.5 text-xs rounded-full flex-shrink-0 ${
+                        store.isActive 
+                          ? 'bg-green-100 text-green-700' 
+                          : 'bg-red-100 text-red-700'
+                      }`}>
+                        {store.isActive ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-teal-600 mb-0.5">{store.category}</p>
+                    <p className="text-xs text-gray-500 truncate">{store.address}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Search Results Info */}
+        {searchQuery && (
+          <div className="mt-3 pt-3 border-t border-gray-200 flex items-center justify-between">
+            <p className="text-sm text-gray-600">
+              Found <span className="font-semibold text-gray-900">{filteredStores.length}</span> store{filteredStores.length !== 1 ? 's' : ''} matching "{searchQuery}"
+            </p>
+            <button
+              onClick={clearSearch}
+              className="text-sm text-emerald-600 hover:text-emerald-700 font-medium flex items-center gap-1.5 hover:bg-emerald-50 px-3 py-1.5 rounded-md transition"
+            >
+              <X className="w-4 h-4" />
+              Clear search
+            </button>
+          </div>
+        )}
+      </div>
+
+      {loading ? (
         <div className="text-center py-12">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading stores...</p>
+        </div>
+      ) : filteredStores.length === 0 ? (
+        <div className="text-center py-16 bg-white rounded-lg border border-gray-200">
           <StoreIcon className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-          <p className="text-gray-600">No stores yet. Add your first store to get started.</p>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">
+            {searchQuery ? 'No stores match your search' : 'No stores yet'}
+          </h3>
+          <p className="text-gray-600 mb-4">
+            {searchQuery ? 'Try adjusting your search terms' : 'Add your first store to get started'}
+          </p>
+          {searchQuery && (
+            <button
+              onClick={clearSearch}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition"
+            >
+              <X className="w-4 h-4" />
+              Clear search
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {stores.map((store) => (
-            <div key={store.id} className="border border-gray-200 rounded-lg overflow-hidden hover:shadow-lg transition">
-              <div className="aspect-video bg-gray-100 overflow-hidden">
+          {filteredStores.map((store) => (
+            <div key={store.id} className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-xl transition">
+              {/* Store Image */}
+              <div className="relative h-36 bg-gray-200">
                 {store.image ? (
-                  <img src={store.image} alt={store.name} className="w-full h-full object-cover" />
+                  <img
+                    src={store.image}
+                    alt={store.name}
+                    className="w-full h-full object-cover"
+                  />
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <StoreIcon className="w-16 h-16 text-gray-300" />
+                  <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-teal-100 to-teal-200">
+                    <StoreIcon className="text-teal-400" size={48} />
                   </div>
                 )}
-              </div>
-              <div className="p-4">
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-gray-900">{store.name}</h3>
-                    <div className="category-badge">
-                      {store.category}
-                    </div>
-                  </div>
-                  <span className={`px-2 py-1 text-xs rounded ${store.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>
+                {/* Active Badge */}
+                <div className="absolute top-2 right-2">
+                  <span
+                    className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                      store.isActive
+                        ? 'bg-green-500 text-white'
+                        : 'bg-red-500 text-white'
+                    }`}
+                  >
                     {store.isActive ? 'Active' : 'Inactive'}
                   </span>
                 </div>
-                <p className="text-sm text-gray-600 mb-3 line-clamp-2">{store.description}</p>
-                <p className="text-sm text-gray-500 mb-1">{store.address}</p>
-                <p className="text-sm text-gray-500 mb-3">{store.phone}</p>
-                <div className="flex gap-2">
+              </div>
+
+              {/* Store Info */}
+              <div className="p-4">
+                <div className="mb-2">
+                  <h3 className="text-lg font-bold text-gray-900 mb-1">{store.name}</h3>
+                  <span className="inline-block px-2 py-1 bg-teal-100 text-teal-700 text-xs rounded-full">
+                    {store.category}
+                  </span>
+                </div>
+
+                {store.description && (
+                  <p className="text-gray-600 text-xs mb-3 line-clamp-2">{store.description}</p>
+                )}
+
+                <div className="space-y-1 text-xs text-gray-600 mb-3">
+                  <p className="flex items-start">
+                    <span className="mr-1">📍</span>
+                    <span className="line-clamp-1">{store.address}</span>
+                  </p>
+                  <p className="flex items-center">
+                    <span className="mr-1">📞</span>
+                    <span>{store.phone}</span>
+                  </p>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex gap-2 pt-2 border-t border-gray-100">
                   <button
-                    onClick={() => openEditModal(store)}
-                    className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-blue-50 text-blue-600 rounded hover:bg-blue-100 transition"
+                    onClick={() => {
+                      setEditingStore(store);
+                      setIsModalOpen(true);
+                    }}
+                    className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition text-sm"
                   >
-                    <Edit2 className="w-4 h-4" />
-                    Edit
+                    <Edit2 size={14} />
+                    <span className="font-medium">Edit</span>
                   </button>
                   <button
                     onClick={() => handleDeleteStore(store.id)}
-                    className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-red-50 text-red-600 rounded hover:bg-red-100 transition"
+                    className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition text-sm"
                   >
-                    <Trash2 className="w-4 h-4" />
-                    Delete
+                    <Trash2 size={14} />
+                    <span className="font-medium">Delete</span>
                   </button>
                 </div>
               </div>
@@ -164,12 +320,21 @@ export default function StoreManagement() {
       {isModalOpen && (
         <StoreModal
           store={editingStore}
-          onSave={editingStore ? handleUpdateStore : handleAddStore}
-          onClose={closeModal}
+          onSave={handleSaveStore}
+          onClose={() => {
+            setIsModalOpen(false);
+            setEditingStore(null);
+          }}
         />
       )}
     </div>
   );
+}
+
+interface StoreModalProps {
+  store: Store | null;
+  onSave: (storeData: Omit<Store, 'id'>) => Promise<void>;
+  onClose: () => void;
 }
 
 function StoreModal({ store, onSave, onClose }: StoreModalProps): JSX.Element {
@@ -211,8 +376,8 @@ function StoreModal({ store, onSave, onClose }: StoreModalProps): JSX.Element {
 
   return (
     <div className="fixed inset-0 flex items-center justify-center z-50">
-      <div className="absolute inset-0 bg-black opacity-30"></div>
-      <div className="bg-white rounded-lg shadow-lg p-6 max-w-lg w-full z-10">
+      <div className="absolute inset-0 bg-black opacity-30" onClick={onClose}></div>
+      <div className="bg-white rounded-lg shadow-lg p-6 max-w-lg w-full z-10 max-h-[90vh] overflow-y-auto">
         <h3 className="text-lg font-semibold text-gray-900 mb-4">{store ? 'Edit Store' : 'Add Store'}</h3>
         <form onSubmit={handleSubmit}>
           <div className="grid grid-cols-1 gap-4">
